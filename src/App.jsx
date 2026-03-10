@@ -55,6 +55,81 @@ const MENU_ITEMS = [
 // ⬇ Hier deine Make Webhook URL eintragen (Szenario 15)
 const NOTIFY_WEBHOOK = "https://hook.eu2.make.com/5tyyp6yjmcrt788r5fgi967mxh12dbpo";
 
+// ============ AIRTABLE CONFIG ============
+const AT_TOKEN = "pat2H7JDN2uHcCl4t.8973e91b5cda47a35799d4b9517bced92ea08d8edb6f872807bdb5d3927dcc2f";
+const AT_BASE  = "appv9sXdA3qm9U1Kl";
+const AT_URL   = `https://api.airtable.com/v0/${AT_BASE}`;
+const AT_HEADS = { "Authorization": `Bearer ${AT_TOKEN}`, "Content-Type": "application/json" };
+
+async function atGet(table, filter="") {
+  try {
+    const url = `${AT_URL}/${encodeURIComponent(table)}${filter?"?filterByFormula="+encodeURIComponent(filter):""}`;
+    const r = await fetch(url, { headers: AT_HEADS });
+    const d = await r.json();
+    return d.records || [];
+  } catch(e) { console.error("AT GET error:", e); return []; }
+}
+
+async function atCreate(table, fields) {
+  try {
+    const r = await fetch(`${AT_URL}/${encodeURIComponent(table)}`, {
+      method: "POST", headers: AT_HEADS,
+      body: JSON.stringify({ records: [{ fields }] })
+    });
+    const d = await r.json();
+    return d.records?.[0] || null;
+  } catch(e) { console.error("AT CREATE error:", e); return null; }
+}
+
+async function atUpdate(table, recordId, fields) {
+  try {
+    await fetch(`${AT_URL}/${encodeURIComponent(table)}/${recordId}`, {
+      method: "PATCH", headers: AT_HEADS,
+      body: JSON.stringify({ fields })
+    });
+  } catch(e) { console.error("AT UPDATE error:", e); }
+}
+
+function mapGuest(rec, idx) {
+  return {
+    id: rec.id,
+    atId: rec.id,
+    name: rec.fields.guest_name || "Unbekannt",
+    room: rec.fields.Rooms?.[0] ? String(rec.fields.Rooms[0]).substring(0,3) : rec.fields.room || "–",
+    phone: rec.fields.phone_number || "",
+    language: rec.fields.language || "german",
+    checkin: rec.fields.check_in || "",
+    checkout: rec.fields.check_out || "",
+    status: rec.fields.status || "reserved",
+    nights: rec.fields.nights || 1,
+    vip: false,
+    email: "",
+  };
+}
+
+function mapRequest(rec) {
+  return {
+    id: rec.id,
+    atId: rec.id,
+    category: rec.fields.category || "",
+    room: rec.fields.room || "",
+    guestName: rec.fields.guest_name || "",
+    phone: rec.fields.phone_number || "",
+    language: rec.fields.language || "german",
+    details: rec.fields.request_details || "",
+    status: rec.fields.status || "open",
+    time: rec.fields.timestamp ? new Date(rec.fields.timestamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}) : "",
+    createdAt: rec.fields.timestamp ? new Date(rec.fields.timestamp).getTime() : Date.now(),
+    // taxi specific
+    destination: rec.fields.request_details?.split("Ziel:")?.[1]?.split(",")[0]?.trim() || rec.fields.request_details || "",
+    requested_time: rec.fields.request_details?.match(/(\d{2}:\d{2})/)?.[1] || "",
+    persons: rec.fields.request_details?.match(/Personen: (\d+)/)?.[1] || "",
+    luggage: rec.fields.request_details?.match(/Gepäck: (.+?)(?:,|$)/)?.[1] || "",
+    confirmed_time: "",
+    created: new Date(rec.fields.timestamp||Date.now()).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}),
+  };
+}
+
 async function sendNotifyWebhook(data) {
   try {
     await fetch(NOTIFY_WEBHOOK, {
@@ -154,7 +229,9 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [tab, setTab] = useState("dashboard");
   const [rooms, setRooms] = useState(INIT_ROOMS);
-  const [guests] = useState(INIT_GUESTS);
+  const [guests, setGuests] = useState(INIT_GUESTS);
+  const [loading, setLoading] = useState(false);
+  const [atReady, setAtReady] = useState(false);
   const [spaBooks, setSpaBooks] = useState([
     { id:1, guestId:5, treatId:1, date:today(), time:"10:00", status:"confirmed" },
     { id:2, guestId:3, treatId:3, date:today(), time:"14:00", status:"confirmed" },
@@ -231,6 +308,38 @@ export default function App() {
     const interval = setInterval(check, 30000);
     return () => clearInterval(interval);
   }, [hkTasks, mtTasks, rsOrders]);
+
+  // ===== AIRTABLE SYNC =====
+  const syncAirtable = async () => {
+    setLoading(true);
+    try {
+      // Load Guests
+      const gRecs = await atGet("Guests");
+      if(gRecs.length > 0) {
+        setGuests(gRecs.map(mapGuest));
+      }
+
+      // Load Service Requests
+      const rRecs = await atGet("Service_Requests", "NOT({status}='completed')");
+      const hk = [], mt = [], rs = [], tx = [];
+      rRecs.forEach(rec => {
+        const r = mapRequest(rec);
+        if(r.category==="housekeeping") hk.push({id:rec.id,atId:rec.id,room:r.room,request:r.details,status:r.status==="in_progress"?"in_progress":r.status==="open"?"open":"completed",priority:"normal",image:null,created:r.created,createdAt:r.createdAt});
+        else if(r.category==="maintenance") mt.push({id:rec.id,atId:rec.id,room:r.room,problem:r.details,location:"Zimmer",status:r.status==="in_progress"?"in_progress":r.status==="open"?"open":"completed",priority:"normal",image:null,created:r.created,createdAt:r.createdAt});
+        else if(r.category==="roomservice") rs.push({id:rec.id,atId:rec.id,guestId:null,room:r.room,items:[{name:r.details,qty:1,price:0}],total:rec.fields.order_total||0,status:r.status==="open"?"ordered":"preparing",time:r.created,minutes:null,createdAt:r.createdAt});
+        else if(r.category==="taxi") tx.push({id:rec.id,atId:rec.id,guestId:null,room:r.room,destination:r.destination,requested_time:r.requested_time,confirmed_time:"",persons:r.persons,luggage:r.luggage,status:"open",created:r.created,createdAt:r.createdAt});
+      });
+      if(hk.length>0) setHkTasks(p=>[...p.filter(t=>!t.atId), ...hk]);
+      if(mt.length>0) setMtTasks(p=>[...p.filter(t=>!t.atId), ...mt]);
+      if(rs.length>0) setRsOrders(p=>[...p.filter(o=>!o.atId), ...rs]);
+      if(tx.length>0) setTaxiRequests(p=>[...p.filter(r=>!r.atId), ...tx]);
+
+      setAtReady(true);
+    } catch(e) { console.error("Sync error:", e); }
+    setLoading(false);
+  };
+
+  useEffect(() => { syncAirtable(); const iv = setInterval(syncAirtable, 30000); return ()=>clearInterval(iv); }, []);
 
   if (!user) return <LoginScreen onLogin={(role) => { setUser(role); setTab(ROLES[role].modules[0]); }} />;
 
@@ -341,6 +450,8 @@ export default function App() {
                 <span style={{ fontSize:12, color:C.err, fontWeight:600 }}>{urgentCount} Dringend</span>
               </div>
             )}
+            {loading && <span style={{ fontSize:11, color:C.dim }}>↻ Sync...</span>}
+            {atReady && !loading && <span style={{ fontSize:11, color:C.ok }}>● Airtable live</span>}
             <span style={{ color:C.dim, fontSize:13 }}>{fmtDate(today())} · {fmtTime()}</span>
           </div>
         </header>
@@ -584,11 +695,66 @@ function Rooms({ rooms, guests, setRooms, notify }) {
 }
 
 // ============ GUESTS ============
+function NewGuestModal({ onClose, onSave }) {
+  const [form, setForm] = useState({ name:"", phone:"", language:"german", checkin:"", checkout:"", nights:"1" });
+  const set = (k,v) => setForm(p=>({...p,[k]:v}));
+  const valid = form.name && form.phone && form.checkin && form.checkout;
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(13,34,69,0.5)", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:999 }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:C.white, borderRadius:6, border:`1px solid ${C.border}`, padding:28, width:440, boxShadow:"0 24px 60px rgba(13,34,69,0.15)", animation:"fadeUp .2s ease" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:24, paddingBottom:16, borderBottom:`1px solid ${C.border}` }}>
+          <h3 style={{ fontFamily:"'Libre Baskerville',serif", fontSize:18, fontWeight:700, margin:0, color:C.navy }}>Neuer Gast</h3>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:C.dim, fontSize:18, cursor:"pointer" }}>✕</button>
+        </div>
+        <label style={lbl}>Name</label>
+        <input value={form.name} onChange={e=>set("name",e.target.value)} placeholder="Vor- und Nachname" style={inp} />
+        <label style={lbl}>Telefon (WhatsApp)</label>
+        <input value={form.phone} onChange={e=>set("phone",e.target.value)} placeholder="+49176..." style={inp} />
+        <label style={lbl}>Sprache</label>
+        <select value={form.language} onChange={e=>set("language",e.target.value)} style={inp}>
+          <option value="german">Deutsch</option>
+          <option value="english">Englisch</option>
+          <option value="french">Französisch</option>
+          <option value="spanish">Spanisch</option>
+          <option value="italian">Italienisch</option>
+          <option value="japanese">Japanisch</option>
+        </select>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+          <div><label style={lbl}>Check-in</label><input type="date" value={form.checkin} onChange={e=>set("checkin",e.target.value)} style={inp} /></div>
+          <div><label style={lbl}>Check-out</label><input type="date" value={form.checkout} onChange={e=>set("checkout",e.target.value)} style={inp} /></div>
+        </div>
+        <label style={lbl}>Nächte</label>
+        <input type="number" value={form.nights} onChange={e=>set("nights",e.target.value)} min="1" style={inp} />
+        <button onClick={()=>valid&&onSave(form)} disabled={!valid}
+          style={{ ...btn(valid?"primary":"ghost"), width:"100%", marginTop:4, opacity:valid?1:0.5 }}>
+          ✓ Gast anlegen & in Airtable speichern
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Guests({ guests, role }) {
+  const [showNewGuest, setShowNewGuest] = useState(false);
   const showPhone = ["admin","reception"].includes(role);
   return (
     <div style={{ animation:"fadeUp .35s ease" }}>
-      <SectionHeader title="Gästeliste" subtitle={`${guests.length} aktuelle Gäste`} />
+      <SectionHeader title="Gästeliste" subtitle={`${guests.length} aktuelle Gäste`}
+        action={role==="admin"||role==="reception" ? <button onClick={()=>setShowNewGuest(true)} style={{...btn("primary")}}>+ Neuer Gast</button> : null} />
+      {showNewGuest && <NewGuestModal onClose={()=>setShowNewGuest(false)} onSave={async(g)=>{
+        const rec = await atCreate("Guests", {
+          guest_name: g.name,
+          phone_number: g.phone,
+          language: g.language,
+          check_in: g.checkin,
+          check_out: g.checkout,
+          status: "reserved",
+          nights: parseInt(g.nights)||1,
+          welcome_sent: false,
+        });
+        if(rec) setGuests(p=>[...p, mapGuest(rec, p.length)]);
+        setShowNewGuest(false);
+      }} />}
       <Card>
         <div style={{ display:"grid", gridTemplateColumns:showPhone?"2fr 60px 140px 80px 100px 100px":"2fr 60px 80px 100px 100px",
           padding:"12px 20px", borderBottom:`1px solid ${C.border}`,
