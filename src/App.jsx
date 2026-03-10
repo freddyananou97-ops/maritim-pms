@@ -179,8 +179,8 @@ export default function App() {
     { id:2, room:"201", problem:"AC making noise", location:"Room", status:"in_progress", priority:"normal", image:null, created:"14:20", createdAt:Date.now()-6*60000 },
   ]);
   const [taxiRequests, setTaxiRequests] = useState([
-    { id:1, guestId:3, room:"301", destination:"Hauptbahnhof Ingolstadt", requested_time:"21:00", confirmed_time:"", status:"open", created:"20:30", createdAt:Date.now()-5*60000 },
-    { id:2, guestId:6, room:"501", destination:"Flughafen München", requested_time:"06:00", confirmed_time:"", status:"open", created:"19:45", createdAt:Date.now()-20*60000 },
+    { id:1, guestId:3, room:"301", destination:"Hauptbahnhof Ingolstadt", requested_time:"21:00", confirmed_time:"", persons:"2", luggage:"1 Koffer", status:"open", created:"20:30", createdAt:Date.now()-5*60000 },
+    { id:2, guestId:6, room:"501", destination:"Flughafen München", requested_time:"06:00", confirmed_time:"", persons:"3", luggage:"2 Koffer", status:"open", created:"19:45", createdAt:Date.now()-20*60000 },
   ]);
   const [selDate, setSelDate] = useState(today());
   const [modal, setModal] = useState(null);
@@ -1029,6 +1029,14 @@ function Taxi({ requests, setRequests, guests, notify }) {
                 <div>
                   <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", fontWeight:600 }}>Gewünschte Uhrzeit</p>
                   <p style={{ margin:0, fontSize:14, fontWeight:600, color:C.navy }}>{req.requested_time} Uhr</p>
+                </div>
+                <div>
+                  <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", fontWeight:600 }}>Personen</p>
+                  <p style={{ margin:0, fontSize:14, fontWeight:600 }}>{req.persons || "–"}</p>
+                </div>
+                <div>
+                  <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", fontWeight:600 }}>Gepäck</p>
+                  <p style={{ margin:0, fontSize:14, fontWeight:600 }}>{req.luggage || "Keines angegeben"}</p>
                 </div>
               </div>
 
