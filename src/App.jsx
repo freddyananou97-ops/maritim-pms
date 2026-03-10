@@ -331,6 +331,20 @@ export default function App() {
         }
       }
 
+      // Load Rooms
+      const roomRecs = await atGet("Rooms");
+      if(roomRecs.length > 0) {
+        setRooms(roomRecs.map(rec => ({
+          number: String(rec.fields.room_number || ""),
+          floor: rec.fields.floor || 1,
+          type: rec.fields.type || "standard_single",
+          status: rec.fields.status || "free",
+          guestId: null,
+          price: rec.fields.type==="penthouse"?450:rec.fields.type==="suite"?310:rec.fields.type==="junior_suite"?220:rec.fields.type==="superior_double"?165:rec.fields.type==="standard_double"?125:95,
+          atId: rec.id,
+        })));
+      }
+
       // Load Guests
       const gRecs = await atGet("Guests");
       if(gRecs.length > 0) {
@@ -663,7 +677,12 @@ function Dashboard({ guests, rooms, spaBooks, restBooks, rsOrders, hkTasks, mtTa
 function Rooms({ rooms, guests, setRooms, notify }) {
   const [filter, setFilter] = useState("all");
   const filtered = filter==="all" ? rooms : rooms.filter(r=>r.status===filter);
-  const changeStatus = (num, status) => { setRooms(p=>p.map(r=>r.number===num?{...r,status}:r)); notify("Zimmerstatus geändert"); };
+  const changeStatus = (num, status) => {
+    const room = rooms.find(r=>r.number===num);
+    if(room?.atId) atUpdate("Rooms", room.atId, { status });
+    setRooms(p=>p.map(r=>r.number===num?{...r,status}:r));
+    notify("Zimmerstatus geändert");
+  };
 
   return (
     <div style={{ animation:"fadeUp .35s ease" }}>
