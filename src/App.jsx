@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from "react";
 
 // ============ CONFIG ============
 const ROLES = {
-  admin: { label: "Admin", icon: "👑", modules: ["dashboard","rooms","guests","spa","restaurant","roomservice","housekeeping","maintenance","billing","reports"] },
-  reception: { label: "Rezeption", icon: "🛎️", modules: ["dashboard","rooms","guests","spa","restaurant","roomservice","billing"] },
+  admin: { label: "Admin", icon: "👑", modules: ["dashboard","rooms","guests","spa","restaurant","roomservice","housekeeping","maintenance","taxi","billing","reports"] },
+  reception: { label: "Rezeption", icon: "🛎️", modules: ["dashboard","rooms","guests","spa","restaurant","roomservice","taxi","billing"] },
   housekeeping: { label: "Housekeeping", icon: "🧹", modules: ["housekeeping"] },
   maintenance: { label: "Technik", icon: "🔧", modules: ["maintenance"] },
   kitchen: { label: "Küche", icon: "👨‍🍳", modules: ["roomservice"] },
@@ -52,7 +52,8 @@ const MENU_ITEMS = [
 
 
 // ============ NOTIFY WEBHOOK ============
-const NOTIFY_WEBHOOK = import.meta.env.VITE_NOTIFY_WEBHOOK || "https://hook.eu2.make.com/DEINE_WEBHOOK_URL";
+// ⬇ Hier deine Make Webhook URL eintragen (Szenario 15)
+const NOTIFY_WEBHOOK = "https://hook.eu2.make.com/5tyyp6yjmcrt788r5fgi967mxh12dbpo";
 
 async function sendNotifyWebhook(data) {
   try {
@@ -176,6 +177,10 @@ export default function App() {
   const [mtTasks, setMtTasks] = useState([
     { id:1, room:"312", problem:"Broken shower head", location:"Bathroom", status:"open", priority:"urgent", image:null, created:"19:55", createdAt:Date.now()-11*60000 },
     { id:2, room:"201", problem:"AC making noise", location:"Room", status:"in_progress", priority:"normal", image:null, created:"14:20", createdAt:Date.now()-6*60000 },
+  ]);
+  const [taxiRequests, setTaxiRequests] = useState([
+    { id:1, guestId:3, room:"301", destination:"Hauptbahnhof Ingolstadt", requested_time:"21:00", confirmed_time:"", status:"open", created:"20:30", createdAt:Date.now()-5*60000 },
+    { id:2, guestId:6, room:"501", destination:"Flughafen München", requested_time:"06:00", confirmed_time:"", status:"open", created:"19:45", createdAt:Date.now()-20*60000 },
   ]);
   const [selDate, setSelDate] = useState(today());
   const [modal, setModal] = useState(null);
@@ -348,6 +353,7 @@ export default function App() {
           {tab==="roomservice" && <RoomService orders={rsOrders} setOrders={setRsOrders} guests={guests} notify={notify} role={user} alerts={sectionAlerts.roomservice||[]} />}
           {tab==="housekeeping" && <Housekeeping tasks={hkTasks} setTasks={setHkTasks} notify={notify} alerts={sectionAlerts.housekeeping||[]} guests={guests} />}
           {tab==="maintenance" && <Maintenance tasks={mtTasks} setTasks={setMtTasks} notify={notify} alerts={sectionAlerts.maintenance||[]} guests={guests} />}
+          {tab==="taxi" && <Taxi requests={taxiRequests} setRequests={setTaxiRequests} guests={guests} notify={notify} />}
           {tab==="billing" && <Billing guests={guests} spaBooks={spaBooks} restBooks={restBooks} rsOrders={rsOrders} rooms={rooms} />}
           {tab==="reports" && <Reports guests={guests} rooms={rooms} spaBooks={spaBooks} restBooks={restBooks} rsOrders={rsOrders} hkTasks={hkTasks} />}
         </main>
@@ -961,6 +967,108 @@ function Maintenance({ tasks, setTasks, notify, alerts=[], guests=[] }) {
           </Card>
         ))}
       </div>
+    </div>
+  );
+}
+
+
+// ============ TAXI ============
+function Taxi({ requests, setRequests, guests, notify }) {
+  const [confirmedTimes, setConfirmedTimes] = useState({});
+  const active = requests.filter(r=>r.status==="open");
+  const done = requests.filter(r=>r.status==="confirmed");
+
+  const confirm = (req) => {
+    const time = confirmedTimes[req.id] || req.requested_time;
+    if(!time) { notify("Bitte bestätigte Uhrzeit eingeben","err"); return; }
+    const guest = guests.find(g=>g.id===req.guestId);
+    sendNotifyWebhook({
+      category: "taxi",
+      room: req.room,
+      phone_number: guest?.phone || "",
+      language: guest?.language || "german",
+      destination: req.destination,
+      confirmed_time: time,
+      status: "accepted"
+    });
+    setRequests(p=>p.map(r=>r.id===req.id?{...r,status:"confirmed",confirmed_time:time}:r));
+    notify(`Bestätigt — Gast wird über ${time} Uhr informiert ✉️`);
+  };
+
+  return (
+    <div style={{ animation:"fadeUp .35s ease" }}>
+      <SectionHeader title="Taxi" subtitle={`${active.length} offene Anfragen`} />
+
+      {active.length===0 && (
+        <Card style={{ padding:48, textAlign:"center" }}>
+          <p style={{ color:C.dim, fontSize:15, margin:0 }}>Keine offenen Taxi-Anfragen ✓</p>
+        </Card>
+      )}
+
+      <div style={{ display:"grid", gap:14, marginBottom:28 }}>
+        {active.map(req => {
+          const guest = guests.find(g=>g.id===req.guestId);
+          return (
+            <Card key={req.id} style={{ padding:20, borderLeft:`3px solid ${C.warn}` }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16 }}>
+                <div>
+                  <span style={{ fontFamily:"'Libre Baskerville',serif", fontSize:20, fontWeight:700, color:C.navy }}>
+                    🚕 Zimmer {req.room}
+                  </span>
+                  {guest && <span style={{ color:C.dim, fontSize:12, marginLeft:10 }}>{guest.name}</span>}
+                </div>
+                <span style={badge(C.warn)}>Wartet auf Bestätigung</span>
+              </div>
+
+              <div style={{ background:C.bg, borderRadius:4, padding:"12px 16px", marginBottom:16, display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <div>
+                  <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", fontWeight:600 }}>Ziel</p>
+                  <p style={{ margin:0, fontSize:14, fontWeight:600 }}>{req.destination}</p>
+                </div>
+                <div>
+                  <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em", fontWeight:600 }}>Gewünschte Uhrzeit</p>
+                  <p style={{ margin:0, fontSize:14, fontWeight:600, color:C.navy }}>{req.requested_time} Uhr</p>
+                </div>
+              </div>
+
+              <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+                <div style={{ flex:1 }}>
+                  <label style={{ ...lbl, marginBottom:4 }}>Bestätigte Uhrzeit</label>
+                  <input
+                    type="time"
+                    defaultValue={req.requested_time}
+                    onChange={e=>setConfirmedTimes(p=>({...p,[req.id]:e.target.value}))}
+                    style={{ ...inp, marginBottom:0, width:"100%" }}
+                  />
+                </div>
+                <button onClick={()=>confirm(req)}
+                  style={{ ...btn("primary"), marginTop:20, whiteSpace:"nowrap", padding:"10px 20px" }}>
+                  ✓ Bestätigen & Gast informieren
+                </button>
+              </div>
+
+              <p style={{ margin:"10px 0 0", fontSize:11, color:C.dim }}>
+                Anfrage eingegangen: {req.created} Uhr
+              </p>
+            </Card>
+          );
+        })}
+      </div>
+
+      {done.length > 0 && (
+        <>
+          <p style={{ fontSize:11, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.1em", color:C.dim, margin:"0 0 12px" }}>Bestätigt</p>
+          {done.map(req => {
+            const guest = guests.find(g=>g.id===req.guestId);
+            return (
+              <div key={req.id} style={{ background:C.bg, borderRadius:4, padding:"12px 16px", marginBottom:8, border:`1px solid ${C.border}`, opacity:0.7, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span style={{ fontSize:13 }}>🚕 Zi. {req.room} · {guest?.name} · {req.destination}</span>
+                <span style={{ fontSize:13, fontWeight:600, color:C.ok }}>✓ {req.confirmed_time} Uhr bestätigt</span>
+              </div>
+            );
+          })}
+        </>
+      )}
     </div>
   );
 }
