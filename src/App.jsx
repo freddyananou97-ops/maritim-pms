@@ -108,25 +108,33 @@ function mapGuest(rec, idx) {
 }
 
 function mapRequest(rec) {
+  const details = rec.fields.request_details || "";
+  const status = rec.fields.status || "open";
+  const timeStr = rec.fields.timestamp ? new Date(rec.fields.timestamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}) : "";
+
+  // Parse taxi: "4 person(s) to Hauptbahnhof departure: 14:30"
+  const taxiTimeMatch = details.match(/departure:\s*(\d{1,2}:\d{2})/i) || details.match(/(\d{2}:\d{2})/);
+  const taxiPersonMatch = details.match(/^(\d+)\s+person/i);
+  const taxiDest = details.replace(/^\d+\s+person\(s\)\s+to\s+/i,"").replace(/\s+departure:.*$/i,"").trim();
+
   return {
     id: rec.id,
     atId: rec.id,
     category: rec.fields.category || "",
-    room: rec.fields.room || "",
+    room: String(rec.fields.room || ""),
     guestName: rec.fields.guest_name || "",
     phone: rec.fields.phone_number || "",
     language: rec.fields.language || "german",
-    details: rec.fields.request_details || "",
-    status: rec.fields.status || "open",
-    time: rec.fields.timestamp ? new Date(rec.fields.timestamp).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}) : "",
+    details: details,
+    status: status,
+    time: timeStr,
     createdAt: rec.fields.timestamp ? new Date(rec.fields.timestamp).getTime() : Date.now(),
-    // taxi specific
-    destination: rec.fields.request_details?.split("Ziel:")?.[1]?.split(",")[0]?.trim() || rec.fields.request_details || "",
-    requested_time: rec.fields.request_details?.match(/(\d{2}:\d{2})/)?.[1] || "",
-    persons: rec.fields.request_details?.match(/Personen: (\d+)/)?.[1] || "",
-    luggage: rec.fields.request_details?.match(/Gepäck: (.+?)(?:,|$)/)?.[1] || "",
+    destination: taxiDest || details,
+    requested_time: taxiTimeMatch?.[1] || "",
+    persons: taxiPersonMatch?.[1] || "",
+    luggage: "",
     confirmed_time: "",
-    created: new Date(rec.fields.timestamp||Date.now()).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}),
+    created: timeStr,
   };
 }
 
@@ -310,9 +318,19 @@ export default function App() {
   }, [hkTasks, mtTasks, rsOrders]);
 
   // ===== AIRTABLE SYNC =====
-  const syncAirtable = async () => {
+  const syncAirtable = async (isFirst=false) => {
     setLoading(true);
     try {
+      // Populate Rooms table if empty (first time)
+      if(isFirst) {
+        const rmsCheck = await atGet("Rooms");
+        if(rmsCheck.length === 0) {
+          for(const r of INIT_ROOMS) {
+            await atCreate("Rooms", { room_number: r.number, floor: r.floor, type: r.type, status: r.status });
+          }
+        }
+      }
+
       // Load Guests
       const gRecs = await atGet("Guests");
       if(gRecs.length > 0) {
@@ -326,8 +344,8 @@ export default function App() {
         const r = mapRequest(rec);
         if(r.category==="housekeeping") hk.push({id:rec.id,atId:rec.id,room:r.room,request:r.details,status:r.status==="in_progress"?"in_progress":r.status==="open"?"open":"completed",priority:"normal",image:null,created:r.created,createdAt:r.createdAt});
         else if(r.category==="maintenance") mt.push({id:rec.id,atId:rec.id,room:r.room,problem:r.details,location:"Zimmer",status:r.status==="in_progress"?"in_progress":r.status==="open"?"open":"completed",priority:"normal",image:null,created:r.created,createdAt:r.createdAt});
-        else if(r.category==="roomservice") rs.push({id:rec.id,atId:rec.id,guestId:null,room:r.room,items:[{name:r.details,qty:1,price:0}],total:rec.fields.order_total||0,status:r.status==="open"?"ordered":"preparing",time:r.created,minutes:null,createdAt:r.createdAt});
-        else if(r.category==="taxi") tx.push({id:rec.id,atId:rec.id,guestId:null,room:r.room,destination:r.destination,requested_time:r.requested_time,confirmed_time:"",persons:r.persons,luggage:r.luggage,status:"open",created:r.created,createdAt:r.createdAt});
+        else if(r.category==="roomservice") rs.push({id:rec.id,atId:rec.id,guestId:null,room:r.room,phone:r.phone,language:r.language,items:[{name:r.details,qty:1,price:0}],total:rec.fields.order_total||0,status:r.status==="open"||!r.status?"ordered":r.status==="in_progress"?"preparing":r.status==="delivering"?"delivering":"delivered",time:r.created,minutes:null,createdAt:r.createdAt});
+        else if(r.category==="taxi") tx.push({id:rec.id,atId:rec.id,guestId:null,room:r.room,phone:r.phone,language:r.language,destination:r.destination,requested_time:r.requested_time,confirmed_time:"",persons:r.persons,luggage:r.luggage,status:r.status&&r.status!=="open"?r.status:"open",created:r.created,createdAt:r.createdAt});
       });
       if(hk.length>0) setHkTasks(p=>[...p.filter(t=>!t.atId), ...hk]);
       if(mt.length>0) setMtTasks(p=>[...p.filter(t=>!t.atId), ...mt]);
@@ -339,7 +357,7 @@ export default function App() {
     setLoading(false);
   };
 
-  useEffect(() => { syncAirtable(); const iv = setInterval(syncAirtable, 30000); return ()=>clearInterval(iv); }, []);
+  useEffect(() => { syncAirtable(true); const iv = setInterval(()=>syncAirtable(false), 30000); return ()=>clearInterval(iv); }, []);
 
   if (!user) return <LoginScreen onLogin={(role) => { setUser(role); setTab(ROLES[role].modules[0]); }} />;
 
@@ -938,22 +956,31 @@ function RoomService({ orders, setOrders, guests, notify, role, alerts=[] }) {
   const [pendingMinutes, setPendingMinutes] = useState({});
   const advance = (id) => {
     const order = orders.find(o=>o.id===id);
+    const newStatus = next[order.status] || order.status;
     if(order.status==="ordered") {
       const minutes = pendingMinutes[id] || "30";
       const guest = guests.find(g=>g.id===order.guestId);
+      // find phone from phone field directly if no guestId match
+      const phone = guest?.phone || order.phone || "";
+      const lang = guest?.language || order.language || "german";
       sendNotifyWebhook({
         category: "roomservice",
         room: order.room,
-        phone_number: guest?.phone || "",
-        language: guest?.language || "german",
+        phone_number: phone,
+        language: lang,
         minutes: minutes,
         status: "accepted"
       });
+      if(order.atId) atUpdate("Service_Requests", order.atId, { status: "in_progress" });
       notify(`Angenommen — Gast wird über ${minutes} Min. informiert ✉️`);
-    } else {
+    } else if(order.status==="preparing") {
+      if(order.atId) atUpdate("Service_Requests", order.atId, { status: "delivering" });
       notify("Status aktualisiert");
+    } else if(order.status==="delivering") {
+      if(order.atId) atUpdate("Service_Requests", order.atId, { status: "completed" });
+      notify("Geliefert ✓");
     }
-    setOrders(p=>p.map(o=>o.id===id?{...o,status:next[o.status]||o.status,minutes:pendingMinutes[id]||o.minutes}:o));
+    setOrders(p=>p.map(o=>o.id===id?{...o,status:newStatus,minutes:pendingMinutes[id]||o.minutes}:o));
   };
   const setMin = (id, min) => { setPendingMinutes(p=>({...p,[id]:min})); };
   const active = orders.filter(o=>o.status!=="delivered");
@@ -1035,6 +1062,7 @@ function Housekeeping({ tasks, setTasks, notify, alerts=[], guests=[] }) {
   const next = { open:"in_progress", in_progress:"completed" };
   const advance = id => {
     const task = tasks.find(t=>t.id===id);
+    const newStatus = next[task.status] || task.status;
     if(task.status==="open") {
       const guest = guests.find(g=>g.room===task.room);
       sendNotifyWebhook({
@@ -1044,8 +1072,11 @@ function Housekeeping({ tasks, setTasks, notify, alerts=[], guests=[] }) {
         language: guest?.language || "german",
         status: "accepted"
       });
+      if(task.atId) atUpdate("Service_Requests", task.atId, { status: "in_progress" });
+    } else if(task.status==="in_progress") {
+      if(task.atId) atUpdate("Service_Requests", task.atId, { status: "completed" });
     }
-    setTasks(p=>p.map(t=>t.id===id?{...t,status:next[t.status]||t.status}:t));
+    setTasks(p=>p.map(t=>t.id===id?{...t,status:newStatus}:t));
     notify(task.status==="in_progress"?"Auftrag erledigt ✓":"Angenommen — Gast wird benachrichtigt ✉️");
   };
   const active = tasks.filter(t=>t.status!=="completed");
@@ -1092,6 +1123,7 @@ function Maintenance({ tasks, setTasks, notify, alerts=[], guests=[] }) {
   const next = { open:"in_progress", in_progress:"completed" };
   const advance = id => {
     const task = tasks.find(t=>t.id===id);
+    const newStatus = next[task.status] || task.status;
     if(task.status==="open") {
       const guest = guests.find(g=>g.room===task.room);
       sendNotifyWebhook({
@@ -1101,8 +1133,11 @@ function Maintenance({ tasks, setTasks, notify, alerts=[], guests=[] }) {
         language: guest?.language || "german",
         status: "accepted"
       });
+      if(task.atId) atUpdate("Service_Requests", task.atId, { status: "in_progress" });
+    } else if(task.status==="in_progress") {
+      if(task.atId) atUpdate("Service_Requests", task.atId, { status: "completed" });
     }
-    setTasks(p=>p.map(t=>t.id===id?{...t,status:next[t.status]||t.status}:t));
+    setTasks(p=>p.map(t=>t.id===id?{...t,status:newStatus}:t));
     notify(task.status==="in_progress"?"Reparatur abgeschlossen ✓":"Angenommen — Gast wird benachrichtigt ✉️");
   };
 
@@ -1149,15 +1184,18 @@ function Taxi({ requests, setRequests, guests, notify }) {
     const time = confirmedTimes[req.id] || req.requested_time;
     if(!time) { notify("Bitte bestätigte Uhrzeit eingeben","err"); return; }
     const guest = guests.find(g=>g.id===req.guestId);
+    const phone = guest?.phone || req.phone || "";
+    const lang = guest?.language || req.language || "german";
     sendNotifyWebhook({
       category: "taxi",
       room: req.room,
-      phone_number: guest?.phone || "",
-      language: guest?.language || "german",
+      phone_number: phone,
+      language: lang,
       destination: req.destination,
       confirmed_time: time,
       status: "accepted"
     });
+    if(req.atId) atUpdate("Service_Requests", req.atId, { status: "completed" });
     setRequests(p=>p.map(r=>r.id===req.id?{...r,status:"confirmed",confirmed_time:time}:r));
     notify(`Bestätigt — Gast wird über ${time} Uhr informiert ✉️`);
   };
