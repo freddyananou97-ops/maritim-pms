@@ -244,6 +244,7 @@ export default function App() {
     { id:"roomservice", label:"Room Service", icon:"⊕" },
     { id:"housekeeping", label:"Housekeeping", icon:"⊘" },
     { id:"maintenance", label:"Technik", icon:"⚙" },
+    { id:"taxi", label:"Taxi", icon:"🚕" },
     { id:"billing", label:"Rechnungen", icon:"◈" },
     { id:"reports", label:"Berichte", icon:"◉" },
   ].filter(n => mods.includes(n.id));
