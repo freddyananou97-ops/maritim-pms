@@ -333,16 +333,26 @@ export default function App() {
 
       // Load Rooms
       const roomRecs = await atGet("Rooms");
-      if(roomRecs.length > 0) {
-        setRooms(roomRecs.map(rec => ({
-          number: String(rec.fields.room_number || ""),
-          floor: rec.fields.floor || 1,
-          type: rec.fields.type || "standard_single",
-          status: rec.fields.status || "free",
-          guestId: null,
-          price: rec.fields.type==="penthouse"?450:rec.fields.type==="suite"?310:rec.fields.type==="junior_suite"?220:rec.fields.type==="superior_double"?165:rec.fields.type==="standard_double"?125:95,
-          atId: rec.id,
-        })));
+      const validRooms = roomRecs.filter(rec => rec.fields.room_number && rec.fields.room_number !== "room_number");
+      if(validRooms.length > 0) {
+        setRooms(validRooms.map(rec => {
+          const num = String(rec.fields.room_number || "");
+          const floor = rec.fields.floor || parseInt(num[0]) || 1;
+          // Derive type from room number if empty
+          const typeMap = {"1":"standard_single","2":"standard_double","3":"superior_double","4":"junior_suite","5":"suite","6":"penthouse"};
+          const derivedType = typeMap[num[0]] || "standard_single";
+          const type = rec.fields.type || derivedType;
+          const priceMap = {penthouse:450,suite:310,junior_suite:220,superior_double:165,standard_double:125,standard_single:95};
+          return {
+            number: num,
+            floor: floor,
+            type: type,
+            status: rec.fields.status || "free",
+            guestId: null,
+            price: priceMap[type] || 95,
+            atId: rec.id,
+          };
+        }));
       }
 
       // Load Guests
@@ -676,12 +686,25 @@ function Dashboard({ guests, rooms, spaBooks, restBooks, rsOrders, hkTasks, mtTa
 // ============ ROOMS ============
 function Rooms({ rooms, guests, setRooms, notify }) {
   const [filter, setFilter] = useState("all");
-  const filtered = filter==="all" ? rooms : rooms.filter(r=>r.status===filter);
+  const [selectedRoom, setSelectedRoom] = useState(null);
+
   const changeStatus = (num, status) => {
     const room = rooms.find(r=>r.number===num);
     if(room?.atId) atUpdate("Rooms", room.atId, { status });
     setRooms(p=>p.map(r=>r.number===num?{...r,status}:r));
     notify("Zimmerstatus geändert");
+    if(selectedRoom?.number===num) setSelectedRoom(p=>({...p,status}));
+  };
+
+  const filtered = (filter==="all" ? rooms : rooms.filter(r=>r.status===filter)).sort((a,b)=>parseInt(a.number)-parseInt(b.number));
+
+  // Find guest by room number
+  const getGuest = (room) => guests.find(g => String(g.room) === String(room.number));
+
+  const doCheckout = (room) => {
+    changeStatus(room.number, "checkout_today");
+    notify("Check-out eingeleitet ✓");
+    setSelectedRoom(null);
   };
 
   return (
@@ -694,39 +717,140 @@ function Rooms({ rooms, guests, setRooms, notify }) {
               border:`1.5px solid ${filter===k?C.navy:C.border}`,
               background:filter===k?C.navy:"transparent",
               color:filter===k?"#fff":C.dim,
-              cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:filter===k?600:400, letterSpacing:"0.02em" }}>
+              cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:filter===k?600:400 }}>
             {v}
           </button>
         ))}
       </div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14 }}>
+
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10 }}>
         {filtered.map(r => {
-          const g = guests.find(g=>g.id===r.guestId);
+          const g = getGuest(r);
           return (
-            <Card key={r.number} style={{ padding:20, borderLeft:`3px solid ${ROOM_STATUS_COLORS[r.status]}` }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
-                <div>
-                  <span style={{ fontFamily:"'Libre Baskerville',serif", fontSize:22, fontWeight:700, color:C.navy }}>Zi. {r.number}</span>
-                  <p style={{ margin:"2px 0 0", fontSize:11, color:C.dim }}>{ROOM_TYPES[r.type]} · Etage {r.floor} · {r.price}€/Nacht</p>
-                </div>
-                <span style={badge(ROOM_STATUS_COLORS[r.status])}>{ROOM_STATUS_LABELS[r.status]}</span>
+            <div key={r.number} onClick={()=>setSelectedRoom(r)}
+              style={{ background:C.white, borderRadius:6, border:`1.5px solid ${ROOM_STATUS_COLORS[r.status]}30`,
+                borderLeft:`3px solid ${ROOM_STATUS_COLORS[r.status]}`,
+                padding:"14px 16px", cursor:"pointer", transition:"all .15s",
+                boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                <span style={{ fontFamily:"'Libre Baskerville',serif", fontSize:20, fontWeight:700, color:C.navy }}>
+                  {r.number}
+                </span>
+                <span style={{ ...badge(ROOM_STATUS_COLORS[r.status]), fontSize:10 }}>{ROOM_STATUS_LABELS[r.status]}</span>
               </div>
-              {g && (
-                <div style={{ padding:"8px 12px", background:C.bg, borderRadius:4, marginBottom:12 }}>
-                  <p style={{ margin:0, fontSize:13, fontWeight:600 }}>{g.name} {g.vip && <span style={{ color:C.gold, fontSize:11 }}>★ VIP</span>}</p>
-                  <p style={{ margin:"2px 0 0", fontSize:11, color:C.dim }}>{g.checkin} → {g.checkout}</p>
-                </div>
+              <p style={{ margin:"0 0 4px", fontSize:11, color:C.dim }}>{ROOM_TYPES[r.type]}</p>
+              {g ? (
+                <p style={{ margin:0, fontSize:12, fontWeight:600, color:C.navy }}>{g.name}</p>
+              ) : (
+                <p style={{ margin:0, fontSize:11, color:C.dimL }}>Kein Gast</p>
               )}
-              <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                {r.status==="free" && <button onClick={()=>changeStatus(r.number,"occupied")} style={btn("success")}>Check-in</button>}
-                {r.status==="occupied" && <button onClick={()=>changeStatus(r.number,"checkout_today")} style={btn("warn")}>Check-out</button>}
-                {r.status==="checkout_today" && <button onClick={()=>changeStatus(r.number,"cleaning")} style={btn("ghost")}>Reinigung</button>}
-                {r.status==="cleaning" && <button onClick={()=>changeStatus(r.number,"free")} style={btn("success")}>Freigeben</button>}
-              </div>
-            </Card>
+            </div>
           );
         })}
       </div>
+
+      {/* Room Detail Popup */}
+      {selectedRoom && (() => {
+        const g = getGuest(selectedRoom);
+        return (
+          <div onClick={()=>setSelectedRoom(null)}
+            style={{ position:"fixed", inset:0, background:"rgba(13,34,69,0.5)", backdropFilter:"blur(8px)",
+              display:"flex", alignItems:"center", justifyContent:"center", zIndex:999 }}>
+            <div onClick={e=>e.stopPropagation()}
+              style={{ background:C.white, borderRadius:6, border:`1px solid ${C.border}`, width:460,
+                boxShadow:"0 24px 60px rgba(13,34,69,0.15)", animation:"fadeUp .2s ease", overflow:"hidden" }}>
+
+              {/* Header */}
+              <div style={{ background:C.navy, padding:"20px 24px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <p style={{ margin:"0 0 2px", fontFamily:"'Libre Baskerville',serif", fontSize:22, fontWeight:700, color:"#fff" }}>
+                    Zimmer {selectedRoom.number}
+                  </p>
+                  <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,0.5)" }}>
+                    {ROOM_TYPES[selectedRoom.type]} · Etage {selectedRoom.floor} · {selectedRoom.price}€/Nacht
+                  </p>
+                </div>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <span style={{ ...badge(ROOM_STATUS_COLORS[selectedRoom.status]), background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.2)", color:"#fff" }}>
+                    {ROOM_STATUS_LABELS[selectedRoom.status]}
+                  </span>
+                  <button onClick={()=>setSelectedRoom(null)}
+                    style={{ background:"none", border:"none", color:"rgba(255,255,255,0.6)", fontSize:18, cursor:"pointer" }}>✕</button>
+                </div>
+              </div>
+
+              <div style={{ padding:24 }}>
+                {/* Guest Info */}
+                {g ? (
+                  <div style={{ background:C.bg, borderRadius:6, padding:16, marginBottom:20 }}>
+                    <p style={{ margin:"0 0 12px", fontSize:11, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.1em", color:C.dim }}>Aktueller Gast</p>
+                    <p style={{ margin:"0 0 6px", fontSize:16, fontWeight:700, color:C.navy }}>
+                      {g.name} {g.vip && <span style={{ color:C.gold }}>★ VIP</span>}
+                    </p>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:10 }}>
+                      <div>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Telefon</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.phone || "–"}</p>
+                      </div>
+                      <div>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Sprache</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.language}</p>
+                      </div>
+                      <div>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Check-in</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.checkin}</p>
+                      </div>
+                      <div>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Check-out</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.checkout}</p>
+                      </div>
+                      <div>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Nächte</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.nights || "–"}</p>
+                      </div>
+                      <div>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Status</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.status}</p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ background:C.bg, borderRadius:6, padding:16, marginBottom:20, textAlign:"center" }}>
+                    <p style={{ margin:0, color:C.dim, fontSize:14 }}>Kein Gast in diesem Zimmer</p>
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                  {selectedRoom.status==="free" && (
+                    <button onClick={()=>changeStatus(selectedRoom.number,"occupied")} style={{ ...btn("success"), flex:1 }}>
+                      ✓ Check-in
+                    </button>
+                  )}
+                  {selectedRoom.status==="occupied" && (
+                    <button onClick={()=>doCheckout(selectedRoom)} style={{ ...btn("warn"), flex:1 }}>
+                      → Check-out einleiten
+                    </button>
+                  )}
+                  {selectedRoom.status==="checkout_today" && (
+                    <button onClick={()=>changeStatus(selectedRoom.number,"cleaning")} style={{ ...btn("ghost"), flex:1 }}>
+                      🧹 Reinigung starten
+                    </button>
+                  )}
+                  {selectedRoom.status==="cleaning" && (
+                    <button onClick={()=>changeStatus(selectedRoom.number,"free")} style={{ ...btn("success"), flex:1 }}>
+                      ✓ Zimmer freigeben
+                    </button>
+                  )}
+                  <button onClick={()=>setSelectedRoom(null)} style={{ ...btn("ghost") }}>
+                    Schließen
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
