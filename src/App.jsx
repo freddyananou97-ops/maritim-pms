@@ -2,12 +2,12 @@ import { useState, useEffect, useRef } from "react";
 
 // ============ CONFIG ============
 const ROLES = {
-  admin: { label: "Admin", icon: "👑", modules: ["dashboard","rooms","guests","spa","restaurant","roomservice","housekeeping","maintenance","taxi","billing","reports"] },
-  reception: { label: "Rezeption", icon: "🛎️", modules: ["dashboard","rooms","guests","spa","restaurant","roomservice","taxi","billing"] },
+  admin: { label: "Admin", icon: "👑", modules: ["dashboard","rooms","guests","breakfast","spa","restaurant","roomservice","housekeeping","maintenance","taxi","billing","reports"] },
+  reception: { label: "Rezeption", icon: "🛎️", modules: ["dashboard","rooms","guests","breakfast","spa","restaurant","roomservice","taxi","billing"] },
   housekeeping: { label: "Housekeeping", icon: "🧹", modules: ["housekeeping"] },
   maintenance: { label: "Technik", icon: "🔧", modules: ["maintenance"] },
   kitchen: { label: "Küche", icon: "👨‍🍳", modules: ["roomservice"] },
-  restaurant_staff: { label: "Restaurant", icon: "🍽️", modules: ["restaurant"] },
+  restaurant_staff: { label: "Restaurant", icon: "🍽️", modules: ["restaurant","breakfast"] },
   spa_staff: { label: "SPA", icon: "🧖", modules: ["spa"] },
 };
 
@@ -54,6 +54,7 @@ const MENU_ITEMS = [
 // ============ NOTIFY WEBHOOK ============
 // ⬇ Hier deine Make Webhook URL eintragen (Szenario 15)
 const NOTIFY_WEBHOOK = "https://hook.eu2.make.com/5tyyp6yjmcrt788r5fgi967mxh12dbpo";
+const CHECKIN_WEBHOOK = "https://hook.eu2.make.com/CHECKIN_WEBHOOK_URL"; // Szenario 16
 
 // ============ AIRTABLE CONFIG ============
 const AT_TOKEN = "pat2H7JDN2uHcCl4t.8973e91b5cda47a35799d4b9517bced92ea08d8edb6f872807bdb5d3927dcc2f";
@@ -263,6 +264,8 @@ export default function App() {
     { id:1, room:"312", problem:"Broken shower head", location:"Bathroom", status:"open", priority:"urgent", image:null, created:"19:55", createdAt:Date.now()-11*60000 },
     { id:2, room:"201", problem:"AC making noise", location:"Room", status:"in_progress", priority:"normal", image:null, created:"14:20", createdAt:Date.now()-6*60000 },
   ]);
+  const [breakfastLog, setBreakfastLog] = useState({});
+  const [lateCheckouts, setLateCheckouts] = useState([]); // { "roomNumber_date": true }
   const [taxiRequests, setTaxiRequests] = useState([
     { id:1, guestId:3, room:"301", destination:"Hauptbahnhof Ingolstadt", requested_time:"21:00", confirmed_time:"", persons:"2", luggage:"1 Koffer", status:"open", created:"20:30", createdAt:Date.now()-5*60000 },
     { id:2, guestId:6, room:"501", destination:"Flughafen München", requested_time:"06:00", confirmed_time:"", persons:"3", luggage:"2 Koffer", status:"open", created:"19:45", createdAt:Date.now()-20*60000 },
@@ -301,6 +304,13 @@ export default function App() {
         newAlerts.maintenance.push({ id:t.id, room:t.room, text:t.problem, isReminder: isReminder && reminderRef.current[key] });
       });
 
+      lateCheckouts.filter(lc=>lc.status==="open").forEach(lc => {
+        const ageMin = (now - (lc.createdAt||now)) / 60000;
+        const isReminder = ageMin >= 5;
+        if(!newAlerts.reception) newAlerts.reception = [];
+        newAlerts.reception.push({ id:lc.id, room:lc.room, text:`Late Checkout Anfrage`, isReminder });
+      });
+
       rsOrders.filter(o=>o.status==="ordered").forEach(o => {
         const ageMin = (now - (o.createdAt||now)) / 60000;
         const isReminder = ageMin >= 5;
@@ -331,7 +341,8 @@ export default function App() {
         }
       }
 
-      // Load Rooms
+      // Load Rooms (only on first load)
+      if(isFirst) {
       const roomRecs = await atGet("Rooms");
       const validRooms = roomRecs.filter(rec => rec.fields.room_number && rec.fields.room_number !== "room_number");
       if(validRooms.length > 0) {
@@ -354,6 +365,7 @@ export default function App() {
           };
         }));
       }
+      } // end isFirst rooms
 
       // Load Guests
       const gRecs = await atGet("Guests");
@@ -369,6 +381,24 @@ export default function App() {
         if(r.category==="housekeeping") hk.push({id:rec.id,atId:rec.id,room:r.room,request:r.details,status:r.status==="in_progress"?"in_progress":r.status==="open"?"open":"completed",priority:"normal",image:null,created:r.created,createdAt:r.createdAt});
         else if(r.category==="maintenance") mt.push({id:rec.id,atId:rec.id,room:r.room,problem:r.details,location:"Zimmer",status:r.status==="in_progress"?"in_progress":r.status==="open"?"open":"completed",priority:"normal",image:null,created:r.created,createdAt:r.createdAt});
         else if(r.category==="roomservice") rs.push({id:rec.id,atId:rec.id,guestId:null,room:r.room,phone:r.phone,language:r.language,items:[{name:r.details,qty:1,price:0}],total:rec.fields.order_total||0,status:r.status==="open"||!r.status?"ordered":r.status==="in_progress"?"preparing":r.status==="delivering"?"delivering":"delivered",time:r.created,minutes:null,createdAt:r.createdAt});
+        else if(r.category==="late_checkout") {
+          setLateCheckouts(p => {
+            const exists = p.find(x=>x.atId===rec.id);
+            if(exists) return p;
+            return [...p, {
+              id: rec.id, atId: rec.id,
+              room: r.room,
+              guestName: r.guestName || rec.fields.guest_name || "",
+              phone: r.phone || rec.fields.phone_number || "",
+              language: r.language || rec.fields.language || "german",
+              details: r.details,
+              status: rec.fields.status || "open",
+              created: r.created,
+              createdAt: r.createdAt,
+              confirmed_time: "",
+            }];
+          });
+        }
         else if(r.category==="taxi") tx.push({id:rec.id,atId:rec.id,guestId:null,room:r.room,phone:r.phone,language:r.language,destination:r.destination,requested_time:r.requested_time,confirmed_time:"",persons:r.persons,luggage:r.luggage,status:r.status&&r.status!=="open"?r.status:"open",created:r.created,createdAt:r.createdAt});
       });
       if(hk.length>0) setHkTasks(p=>[...p.filter(t=>!t.atId), ...hk]);
@@ -390,6 +420,7 @@ export default function App() {
     { id:"dashboard", label:"Dashboard", icon:"▦" },
     { id:"rooms", label:"Zimmer", icon:"⊞" },
     { id:"guests", label:"Gäste", icon:"♟" },
+    { id:"breakfast", label:"Frühstück", icon:"☕" },
     { id:"spa", label:"SPA & Wellness", icon:"✦" },
     { id:"restaurant", label:"Restaurant", icon:"⊛" },
     { id:"roomservice", label:"Room Service", icon:"⊕" },
@@ -499,14 +530,15 @@ export default function App() {
         </header>
 
         <main style={{ flex:1, padding:"28px 32px", overflowY:"auto" }}>
-          {tab==="dashboard" && <Dashboard guests={guests} rooms={rooms} spaBooks={spaBooks.filter(b=>b.date===today()&&b.status==="confirmed")} restBooks={restBooks.filter(b=>b.date===today()&&b.status==="confirmed")} rsOrders={rsOrders} hkTasks={hkTasks} mtTasks={mtTasks} />}
-          {tab==="rooms" && <Rooms rooms={rooms} guests={guests} setRooms={setRooms} notify={notify} />}
+          {tab==="dashboard" && <Dashboard guests={guests} rooms={rooms} lateCheckouts={lateCheckouts} spaBooks={spaBooks.filter(b=>b.date===today()&&b.status==="confirmed")} restBooks={restBooks.filter(b=>b.date===today()&&b.status==="confirmed")} rsOrders={rsOrders} hkTasks={hkTasks} mtTasks={mtTasks} />}
+          {tab==="rooms" && <Rooms rooms={rooms} guests={guests} setRooms={setRooms} notify={notify} lateCheckouts={lateCheckouts} setLateCheckouts={setLateCheckouts} />}
           {tab==="guests" && <Guests guests={guests} role={user} />}
           {tab==="spa" && <SPA guests={guests} bookings={spaBooks} setBookings={setSpaBooks} selDate={selDate} setSelDate={setSelDate} notify={notify} setModal={setModal} />}
           {tab==="restaurant" && <Restaurant guests={guests} bookings={restBooks} setBookings={setRestBooks} selDate={selDate} setSelDate={setSelDate} notify={notify} setModal={setModal} />}
           {tab==="roomservice" && <RoomService orders={rsOrders} setOrders={setRsOrders} guests={guests} notify={notify} role={user} alerts={sectionAlerts.roomservice||[]} />}
           {tab==="housekeeping" && <Housekeeping tasks={hkTasks} setTasks={setHkTasks} notify={notify} alerts={sectionAlerts.housekeeping||[]} guests={guests} />}
           {tab==="maintenance" && <Maintenance tasks={mtTasks} setTasks={setMtTasks} notify={notify} alerts={sectionAlerts.maintenance||[]} guests={guests} />}
+          {tab==="breakfast" && <Breakfast guests={guests} rooms={rooms} breakfastLog={breakfastLog} setBreakfastLog={setBreakfastLog} notify={notify} />}
           {tab==="taxi" && <Taxi requests={taxiRequests} setRequests={setTaxiRequests} guests={guests} notify={notify} />}
           {tab==="billing" && <Billing guests={guests} spaBooks={spaBooks} restBooks={restBooks} rsOrders={rsOrders} rooms={rooms} />}
           {tab==="reports" && <Reports guests={guests} rooms={rooms} spaBooks={spaBooks} restBooks={restBooks} rsOrders={rsOrders} hkTasks={hkTasks} />}
@@ -683,10 +715,276 @@ function Dashboard({ guests, rooms, spaBooks, restBooks, rsOrders, hkTasks, mtTa
   );
 }
 
+
+// ============ LATE CHECKOUT ALERT ============
+function LateCheckoutAlert({ lc, onConfirm }) {
+  const [time, setTime] = useState("13:00");
+  return (
+    <div style={{ background:"#fff7ed", border:`1.5px solid ${C.warn}`, borderRadius:6, padding:"16px 20px", marginBottom:14, display:"flex", alignItems:"center", gap:16, flexWrap:"wrap" }}>
+      <span style={{ fontSize:22 }}>🕐</span>
+      <div style={{ flex:1 }}>
+        <p style={{ margin:"0 0 2px", fontWeight:700, fontSize:14, color:C.warn }}>Late Checkout Anfrage — Zimmer {lc.room}</p>
+        <p style={{ margin:0, fontSize:13, color:C.text }}>{lc.guestName} · {lc.details}</p>
+      </div>
+      <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+        <input type="time" value={time} onChange={e=>setTime(e.target.value)}
+          style={{ ...inp, width:110, marginBottom:0, padding:"7px 10px" }} />
+        <button onClick={()=>onConfirm(time)}
+          style={{ ...btn("primary"), whiteSpace:"nowrap" }}>
+          ✓ Bestätigen
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============ CHECKIN MODAL ============
+function CheckInModal({ room, guests, onClose, onCheckIn }) {
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+  const [form, setForm] = useState({
+    guest_name:"", birth_date:"", nationality:"", id_number:"",
+    address:"", phone_number:"", email:"", language:"german",
+    persons:"1", breakfast:false, payment_method:"card",
+    check_in: new Date().toISOString().split("T")[0],
+    check_out:"", late_checkout: false
+  });
+  const set = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  const filtered = search.length > 1
+    ? guests.filter(g => g.name?.toLowerCase().includes(search.toLowerCase()) || g.phone?.includes(search))
+    : [];
+
+  const nights = form.check_in && form.check_out
+    ? Math.round((new Date(form.check_out)-new Date(form.check_in))/(1000*60*60*24))
+    : 0;
+
+  const handleCheckIn = async () => {
+    if(!form.check_out) { alert("Bitte Abreisedatum angeben"); return; }
+    const guestData = selected || form;
+    const name = selected ? selected.name : form.guest_name;
+    const phone = selected ? selected.phone : form.phone_number;
+    const language = selected ? selected.language : form.language;
+
+    // If new guest, save to Airtable
+    if(!selected && form.guest_name) {
+      await atCreate("Guests", {
+        guest_name: form.guest_name,
+        birth_date: form.birth_date,
+        nationality: form.nationality,
+        id_number: form.id_number,
+        address: form.address,
+        phone_number: form.phone_number,
+        email: form.email,
+        language: form.language,
+        persons: parseInt(form.persons)||1,
+        breakfast: form.breakfast,
+        payment_method: form.payment_method,
+      });
+    }
+
+    // Update room in Airtable
+    if(room.atId) {
+      await atUpdate("Rooms", room.atId, {
+        status: "occupied",
+        guest_name: name,
+        check_in: form.check_in,
+        check_out: form.check_out,
+        persons: parseInt(form.persons)||1,
+        breakfast: form.breakfast,
+        late_checkout: form.late_checkout,
+        nights: nights,
+      });
+    }
+
+    // Fire check-in webhook for welcome message (10 min delay in Make)
+    try {
+      await fetch(CHECKIN_WEBHOOK, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          guest_name: name,
+          room: room.number,
+          phone_number: phone,
+          language: language,
+          check_in: form.check_in,
+          check_out: form.check_out,
+          nights: nights,
+          breakfast: form.breakfast,
+        })
+      });
+    } catch(e) {}
+
+    onCheckIn({
+      ...room,
+      status: "occupied",
+      guestName: name,
+      guestPhone: phone,
+      guestLanguage: language,
+      checkin: form.check_in,
+      checkout: form.check_out,
+      persons: parseInt(form.persons)||1,
+      breakfast: form.breakfast,
+      late_checkout: form.late_checkout,
+      nights: nights,
+    });
+    onClose();
+  };
+
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(13,34,69,0.5)", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:999 }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:C.white, borderRadius:6, width:520, maxHeight:"90vh", overflow:"auto", boxShadow:"0 24px 60px rgba(13,34,69,0.15)", animation:"fadeUp .2s ease" }}>
+
+        {/* Header */}
+        <div style={{ background:C.navy, padding:"20px 24px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div>
+            <p style={{ margin:"0 0 2px", fontFamily:"'Libre Baskerville',serif", fontSize:20, fontWeight:700, color:"#fff" }}>Check-in — Zimmer {room.number}</p>
+            <p style={{ margin:0, fontSize:12, color:"rgba(255,255,255,0.5)" }}>{ROOM_TYPES[room.type]} · {room.price}€/Nacht</p>
+          </div>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:"rgba(255,255,255,0.6)", fontSize:18, cursor:"pointer" }}>✕</button>
+        </div>
+
+        <div style={{ padding:24 }}>
+          {/* Guest Search */}
+          {!selected && !showNew && (
+            <div style={{ marginBottom:20 }}>
+              <label style={lbl}>Gast suchen (Name oder Telefon)</label>
+              <input value={search} onChange={e=>setSearch(e.target.value)}
+                placeholder="z.B. Müller oder +49176..." style={inp} />
+              {filtered.length > 0 && (
+                <div style={{ border:`1px solid ${C.border}`, borderRadius:4, overflow:"hidden", marginTop:-14, marginBottom:14 }}>
+                  {filtered.map(g => (
+                    <div key={g.id} onClick={()=>setSelected(g)}
+                      style={{ padding:"10px 14px", cursor:"pointer", borderBottom:`1px solid ${C.borderL}`, fontSize:13, display:"flex", justifyContent:"space-between", alignItems:"center" }}
+                      onMouseEnter={e=>e.target.style.background=C.bg}
+                      onMouseLeave={e=>e.target.style.background="transparent"}>
+                      <span style={{ fontWeight:600 }}>{g.name}</span>
+                      <span style={{ color:C.dim, fontSize:11 }}>{g.phone}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {search.length > 1 && filtered.length === 0 && (
+                <p style={{ fontSize:12, color:C.dim, margin:"-10px 0 14px" }}>Kein Gast gefunden</p>
+              )}
+              <button onClick={()=>setShowNew(true)} style={{ ...btn("secondary"), width:"100%" }}>
+                + Neuen Gast anlegen
+              </button>
+            </div>
+          )}
+
+          {/* Selected existing guest */}
+          {selected && (
+            <div style={{ background:C.bg, borderRadius:6, padding:14, marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div>
+                <p style={{ margin:"0 0 2px", fontWeight:700, fontSize:14 }}>{selected.name}</p>
+                <p style={{ margin:0, fontSize:12, color:C.dim }}>{selected.phone} · {selected.language}</p>
+              </div>
+              <button onClick={()=>setSelected(null)} style={btn("ghost")}>Ändern</button>
+            </div>
+          )}
+
+          {/* New guest form */}
+          {showNew && !selected && (
+            <div style={{ background:C.bg, borderRadius:6, padding:16, marginBottom:20 }}>
+              <p style={{ margin:"0 0 14px", fontSize:12, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.08em", color:C.dim }}>Neuer Gast</p>
+              <label style={lbl}>Vollständiger Name *</label>
+              <input value={form.guest_name} onChange={e=>set("guest_name",e.target.value)} placeholder="Vor- und Nachname" style={inp} />
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <div><label style={lbl}>Geburtsdatum *</label><input type="date" value={form.birth_date} onChange={e=>set("birth_date",e.target.value)} style={inp} /></div>
+                <div><label style={lbl}>Staatsangehörigkeit *</label><input value={form.nationality} onChange={e=>set("nationality",e.target.value)} placeholder="z.B. Deutsch" style={inp} /></div>
+              </div>
+              <label style={lbl}>Ausweis/Reisepass Nr. *</label>
+              <input value={form.id_number} onChange={e=>set("id_number",e.target.value)} placeholder="Nummer" style={inp} />
+              <label style={lbl}>Heimatanschrift *</label>
+              <input value={form.address} onChange={e=>set("address",e.target.value)} placeholder="Straße, PLZ, Ort" style={inp} />
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <div><label style={lbl}>Telefon/WhatsApp</label><input value={form.phone_number} onChange={e=>set("phone_number",e.target.value)} placeholder="+49..." style={inp} /></div>
+                <div><label style={lbl}>E-Mail</label><input value={form.email} onChange={e=>set("email",e.target.value)} placeholder="email@..." style={inp} /></div>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <div>
+                  <label style={lbl}>Sprache</label>
+                  <select value={form.language} onChange={e=>set("language",e.target.value)} style={inp}>
+                    <option value="german">Deutsch</option>
+                    <option value="english">Englisch</option>
+                    <option value="french">Französisch</option>
+                    <option value="spanish">Spanisch</option>
+                    <option value="italian">Italienisch</option>
+                    <option value="japanese">Japanisch</option>
+                    <option value="russian">Russisch</option>
+                    <option value="chinese">Chinesisch</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={lbl}>Zahlungsart</label>
+                  <select value={form.payment_method} onChange={e=>set("payment_method",e.target.value)} style={inp}>
+                    <option value="card">Kreditkarte</option>
+                    <option value="cash">Bar</option>
+                    <option value="invoice">Rechnung</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Stay details — always shown */}
+          {(selected || showNew) && (
+            <>
+              <p style={{ margin:"0 0 14px", fontSize:12, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.08em", color:C.dim }}>Aufenthalt</p>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <div><label style={lbl}>Anreise</label><input type="date" value={form.check_in} onChange={e=>set("check_in",e.target.value)} style={inp} /></div>
+                <div><label style={lbl}>Abreise *</label><input type="date" value={form.check_out} onChange={e=>set("check_out",e.target.value)} style={inp} /></div>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <div><label style={lbl}>Personen im Zimmer</label>
+                  <select value={form.persons} onChange={e=>set("persons",e.target.value)} style={inp}>
+                    {[1,2,3,4].map(n=><option key={n} value={n}>{n} Person{n>1?"en":""}</option>)}
+                  </select>
+                </div>
+                <div style={{ display:"flex", flexDirection:"column", justifyContent:"center" }}>
+                  {nights > 0 && <p style={{ margin:"0 0 8px", fontSize:13, color:C.navy, fontWeight:700 }}>🌙 {nights} Nacht{nights>1?"e":""}</p>}
+                </div>
+              </div>
+
+              {/* Breakfast & Late Checkout */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+                <div style={{ background:form.breakfast?C.ok+"10":C.bg, border:`1.5px solid ${form.breakfast?C.ok:C.border}`, borderRadius:6, padding:14, cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}
+                  onClick={()=>set("breakfast",!form.breakfast)}>
+                  <span style={{ fontSize:20 }}>☕</span>
+                  <div>
+                    <p style={{ margin:0, fontWeight:600, fontSize:13 }}>Frühstück</p>
+                    <p style={{ margin:0, fontSize:11, color:C.dim }}>{form.breakfast?"Gebucht":"Nicht gebucht"}</p>
+                  </div>
+                </div>
+                <div style={{ background:form.late_checkout?C.warn+"10":C.bg, border:`1.5px solid ${form.late_checkout?C.warn:C.border}`, borderRadius:6, padding:14, cursor:"pointer", display:"flex", alignItems:"center", gap:10 }}
+                  onClick={()=>set("late_checkout",!form.late_checkout)}>
+                  <span style={{ fontSize:20 }}>🕐</span>
+                  <div>
+                    <p style={{ margin:0, fontWeight:600, fontSize:13 }}>Late Checkout</p>
+                    <p style={{ margin:0, fontSize:11, color:C.dim }}>{form.late_checkout?"Gebucht":"Nicht gebucht"}</p>
+                  </div>
+                </div>
+              </div>
+
+              <button onClick={handleCheckIn}
+                style={{ ...btn("primary"), width:"100%", padding:"12px", fontSize:15 }}>
+                ✓ Check-in bestätigen — Zimmer {room.number}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============ ROOMS ============
-function Rooms({ rooms, guests, setRooms, notify }) {
+function Rooms({ rooms, guests, setRooms, notify, lateCheckouts=[], setLateCheckouts }) {
   const [filter, setFilter] = useState("all");
   const [selectedRoom, setSelectedRoom] = useState(null);
+  const [checkInRoom, setCheckInRoom] = useState(null);
 
   const changeStatus = (num, status) => {
     const room = rooms.find(r=>r.number===num);
@@ -696,14 +994,17 @@ function Rooms({ rooms, guests, setRooms, notify }) {
     if(selectedRoom?.number===num) setSelectedRoom(p=>({...p,status}));
   };
 
-  const filtered = (filter==="all" ? rooms : rooms.filter(r=>r.status===filter)).sort((a,b)=>parseInt(a.number)-parseInt(b.number));
+  const handleCheckIn = (updatedRoom) => {
+    setRooms(p=>p.map(r=>r.number===updatedRoom.number?updatedRoom:r));
+    notify("✓ Check-in erfolgreich — Welcome Message in 10 Min ✉️");
+  };
 
-  // Find guest by room number
+  const filtered = (filter==="all" ? rooms : rooms.filter(r=>r.status===filter)).sort((a,b)=>parseInt(a.number)-parseInt(b.number));
   const getGuest = (room) => guests.find(g => String(g.room) === String(room.number));
 
   const doCheckout = (room) => {
-    changeStatus(room.number, "checkout_today");
-    notify("Check-out eingeleitet ✓");
+    changeStatus(room.number, "cleaning");
+    notify("Check-out — Zimmer zur Reinigung freigegeben 🧹");
     setSelectedRoom(null);
   };
 
@@ -727,31 +1028,72 @@ function Rooms({ rooms, guests, setRooms, notify }) {
         {filtered.map(r => {
           const g = getGuest(r);
           return (
-            <div key={r.number} onClick={()=>setSelectedRoom(r)}
+            <div key={r.number}
+              onClick={()=>r.status==="free"||r.status==="checkin_today" ? setCheckInRoom(r) : setSelectedRoom(r)}
               style={{ background:C.white, borderRadius:6, border:`1.5px solid ${ROOM_STATUS_COLORS[r.status]}30`,
                 borderLeft:`3px solid ${ROOM_STATUS_COLORS[r.status]}`,
                 padding:"14px 16px", cursor:"pointer", transition:"all .15s",
                 boxShadow:"0 1px 4px rgba(0,0,0,0.04)" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
                 <span style={{ fontFamily:"'Libre Baskerville',serif", fontSize:20, fontWeight:700, color:C.navy }}>
                   {r.number}
                 </span>
                 <span style={{ ...badge(ROOM_STATUS_COLORS[r.status]), fontSize:10 }}>{ROOM_STATUS_LABELS[r.status]}</span>
               </div>
               <p style={{ margin:"0 0 4px", fontSize:11, color:C.dim }}>{ROOM_TYPES[r.type]}</p>
-              {g ? (
-                <p style={{ margin:0, fontSize:12, fontWeight:600, color:C.navy }}>{g.name}</p>
+              {r.guestName ? (
+                <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:600, color:C.navy }}>{r.guestName}</p>
+              ) : g ? (
+                <p style={{ margin:"0 0 2px", fontSize:12, fontWeight:600, color:C.navy }}>{g.name}</p>
               ) : (
-                <p style={{ margin:0, fontSize:11, color:C.dimL }}>Kein Gast</p>
+                <p style={{ margin:"0 0 2px", fontSize:11, color:C.dimL }}>Kein Gast</p>
               )}
+              {r.late_checkout && <span style={{ fontSize:10, color:C.warn, fontWeight:700 }}>🕐 LATE CHECKOUT</span>}
+              {r.breakfast && r.status==="occupied" && <span style={{ fontSize:10, color:C.ok, marginLeft:4 }}>☕</span>}
             </div>
           );
         })}
       </div>
 
+      {/* Late Checkout Alert Banner */}
+      {lateCheckouts.filter(lc=>lc.status==="open").map(lc => (
+        <LateCheckoutAlert key={lc.id} lc={lc} onConfirm={(time) => {
+          sendNotifyWebhook({
+            category: "late_checkout",
+            room: lc.room,
+            phone_number: lc.phone,
+            language: lc.language,
+            confirmed_time: time,
+            status: "accepted"
+          });
+          if(lc.atId) atUpdate("Service_Requests", lc.atId, { status: "completed" });
+          setLateCheckouts(p=>p.map(x=>x.id===lc.id?{...x,status:"confirmed",confirmed_time:time}:x));
+          setRooms(p=>p.map(r=>String(r.number)===String(lc.room)?{...r,late_checkout:true,late_checkout_time:time}:r));
+          notify(`✓ Late Checkout Zi. ${lc.room} bis ${time} bestätigt — Gast wird informiert ✉️`);
+        }} />
+      ))}
+
+      {/* CheckIn Modal */}
+      {checkInRoom && (
+        <CheckInModal
+          room={checkInRoom}
+          guests={guests}
+          onClose={()=>setCheckInRoom(null)}
+          onCheckIn={handleCheckIn}
+        />
+      )}
+
       {/* Room Detail Popup */}
       {selectedRoom && (() => {
         const g = getGuest(selectedRoom);
+        const guestName = selectedRoom.guestName || g?.name;
+        const checkin = selectedRoom.checkin || g?.checkin;
+        const checkout = selectedRoom.checkout || g?.checkout;
+        const nights = selectedRoom.nights || g?.nights;
+        const persons = selectedRoom.persons || 1;
+        const breakfast = selectedRoom.breakfast || false;
+        const lateCheckout = selectedRoom.late_checkout || false;
+        const nightsStayed = checkin ? Math.round((Date.now()-new Date(checkin))/(1000*60*60*24)) : 0;
         return (
           <div onClick={()=>setSelectedRoom(null)}
             style={{ position:"fixed", inset:0, background:"rgba(13,34,69,0.5)", backdropFilter:"blur(8px)",
@@ -781,36 +1123,46 @@ function Rooms({ rooms, guests, setRooms, notify }) {
 
               <div style={{ padding:24 }}>
                 {/* Guest Info */}
-                {g ? (
+                {lateCheckout && (
+                  <div style={{ background:C.warn+"15", border:`1.5px solid ${C.warn}`, borderRadius:6, padding:"10px 14px", marginBottom:16, display:"flex", alignItems:"center", gap:8 }}>
+                    <span style={{ fontSize:18 }}>🕐</span>
+                    <div>
+                      <span style={{ fontWeight:700, color:C.warn, fontSize:13 }}>LATE CHECKOUT</span>
+                      {selectedRoom.late_checkout_time && (
+                        <span style={{ fontSize:13, color:C.warn, marginLeft:8 }}>bis {selectedRoom.late_checkout_time} Uhr ✓</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {guestName ? (
                   <div style={{ background:C.bg, borderRadius:6, padding:16, marginBottom:20 }}>
                     <p style={{ margin:"0 0 12px", fontSize:11, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.1em", color:C.dim }}>Aktueller Gast</p>
-                    <p style={{ margin:"0 0 6px", fontSize:16, fontWeight:700, color:C.navy }}>
-                      {g.name} {g.vip && <span style={{ color:C.gold }}>★ VIP</span>}
-                    </p>
-                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginTop:10 }}>
-                      <div>
-                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Telefon</p>
-                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.phone || "–"}</p>
-                      </div>
-                      <div>
-                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Sprache</p>
-                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.language}</p>
-                      </div>
+                    <p style={{ margin:"0 0 10px", fontSize:16, fontWeight:700, color:C.navy }}>{guestName}</p>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
                       <div>
                         <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Check-in</p>
-                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.checkin}</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{checkin || "–"}</p>
                       </div>
                       <div>
                         <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Check-out</p>
-                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.checkout}</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{checkout || "–"}</p>
                       </div>
                       <div>
-                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Nächte</p>
-                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.nights || "–"}</p>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Aufenthalt</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{nightsStayed} von {nights || "?"} Nächten</p>
                       </div>
                       <div>
-                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Status</p>
-                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{g.status}</p>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Personen</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{persons}</p>
+                      </div>
+                      <div>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Frühstück</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:600, color:breakfast?C.ok:C.dim }}>{breakfast?"☕ Gebucht":"Nicht gebucht"}</p>
+                      </div>
+                      <div>
+                        <p style={{ margin:"0 0 2px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.08em" }}>Zimmer</p>
+                        <p style={{ margin:0, fontSize:13, fontWeight:500 }}>{ROOM_TYPES[selectedRoom.type]} · {selectedRoom.price}€/N</p>
                       </div>
                     </div>
                   </div>
@@ -822,19 +1174,14 @@ function Rooms({ rooms, guests, setRooms, notify }) {
 
                 {/* Action Buttons */}
                 <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                  {selectedRoom.status==="free" && (
-                    <button onClick={()=>changeStatus(selectedRoom.number,"occupied")} style={{ ...btn("success"), flex:1 }}>
+                  {(selectedRoom.status==="free"||selectedRoom.status==="checkin_today") && (
+                    <button onClick={()=>{setSelectedRoom(null);setCheckInRoom(selectedRoom);}} style={{ ...btn("success"), flex:1 }}>
                       ✓ Check-in
                     </button>
                   )}
                   {selectedRoom.status==="occupied" && (
                     <button onClick={()=>doCheckout(selectedRoom)} style={{ ...btn("warn"), flex:1 }}>
-                      → Check-out einleiten
-                    </button>
-                  )}
-                  {selectedRoom.status==="checkout_today" && (
-                    <button onClick={()=>changeStatus(selectedRoom.number,"cleaning")} style={{ ...btn("ghost"), flex:1 }}>
-                      🧹 Reinigung starten
+                      → Check-out & Reinigung
                     </button>
                   )}
                   {selectedRoom.status==="cleaning" && (
@@ -1425,6 +1772,88 @@ function Taxi({ requests, setRequests, guests, notify }) {
           })}
         </>
       )}
+    </div>
+  );
+}
+
+
+// ============ BREAKFAST ============
+function Breakfast({ guests, rooms, breakfastLog, setBreakfastLog, notify }) {
+  const todayStr = new Date().toISOString().split("T")[0];
+
+  // Get all occupied rooms with breakfast
+  const breakfastRooms = rooms.filter(r => r.status==="occupied" && r.breakfast);
+  const total = breakfastRooms.length;
+  const checked = breakfastRooms.filter(r => breakfastLog[`${r.number}_${todayStr}`]).length;
+
+  // Auto-reset at midnight (check if log is from today)
+  useEffect(() => {
+    const now = new Date();
+    const msUntilMidnight = new Date(now.getFullYear(),now.getMonth(),now.getDate()+1,0,0,0) - now;
+    const timer = setTimeout(() => {
+      setBreakfastLog({});
+    }, msUntilMidnight);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const toggle = (roomNum) => {
+    const key = `${roomNum}_${todayStr}`;
+    setBreakfastLog(p => ({ ...p, [key]: !p[key] }));
+    notify(breakfastLog[`${roomNum}_${todayStr}`] ? "Abgehakt rückgängig" : "✓ Frühstück abgehakt");
+  };
+
+  return (
+    <div style={{ animation:"fadeUp .35s ease" }}>
+      <SectionHeader title="Frühstück" subtitle={`${checked}/${total} Zimmer erschienen`} />
+
+      {/* Summary */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:14, marginBottom:28 }}>
+        <Card style={{ padding:"20px 22px" }}>
+          <p style={{ color:C.dim, fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", margin:"0 0 8px", fontWeight:600 }}>Frühstück gebucht</p>
+          <p style={{ fontSize:28, fontWeight:700, margin:0, color:C.navy, fontFamily:"'Libre Baskerville',serif" }}>{total}</p>
+        </Card>
+        <Card style={{ padding:"20px 22px" }}>
+          <p style={{ color:C.dim, fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", margin:"0 0 8px", fontWeight:600 }}>Erschienen</p>
+          <p style={{ fontSize:28, fontWeight:700, margin:0, color:C.ok, fontFamily:"'Libre Baskerville',serif" }}>{checked}</p>
+        </Card>
+        <Card style={{ padding:"20px 22px" }}>
+          <p style={{ color:C.dim, fontSize:10, textTransform:"uppercase", letterSpacing:"0.1em", margin:"0 0 8px", fontWeight:600 }}>Noch ausstehend</p>
+          <p style={{ fontSize:28, fontWeight:700, margin:0, color:C.warn, fontFamily:"'Libre Baskerville',serif" }}>{total-checked}</p>
+        </Card>
+      </div>
+
+      {total === 0 ? (
+        <Card style={{ padding:48, textAlign:"center" }}>
+          <p style={{ color:C.dim, fontSize:15, margin:0 }}>Keine Frühstücksbuchungen für heute</p>
+        </Card>
+      ) : (
+        <Card>
+          <div style={{ padding:"12px 20px", borderBottom:`1px solid ${C.border}`, display:"grid", gridTemplateColumns:"60px 1fr 120px 100px", fontSize:10, color:C.dim, textTransform:"uppercase", letterSpacing:"0.1em", fontWeight:600 }}>
+            <span>Zimmer</span><span>Gast</span><span>Personen</span><span>Status</span>
+          </div>
+          {breakfastRooms.map(r => {
+            const key = `${r.number}_${todayStr}`;
+            const appeared = breakfastLog[key] || false;
+            const guestName = r.guestName || "–";
+            const persons = r.persons || 1;
+            return (
+              <div key={r.number} style={{ padding:"14px 20px", borderBottom:`1px solid ${C.borderL}`, display:"grid", gridTemplateColumns:"60px 1fr 120px 100px", alignItems:"center",
+                background: appeared ? C.ok+"08" : "transparent" }}>
+                <span style={{ fontWeight:700, color:C.navy, fontSize:14 }}>{r.number}</span>
+                <span style={{ fontSize:13, fontWeight:500 }}>{guestName}</span>
+                <span style={{ fontSize:13, color:C.dim }}>👥 {persons} Person{persons>1?"en":""}</span>
+                <button onClick={()=>toggle(r.number)}
+                  style={{ ...btn(appeared?"success":"secondary"), padding:"6px 12px", fontSize:12 }}>
+                  {appeared ? "✓ Da" : "Abhaken"}
+                </button>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+      <p style={{ fontSize:11, color:C.dim, marginTop:16, textAlign:"center" }}>
+        Liste wird automatisch um 0:00 Uhr zurückgesetzt
+      </p>
     </div>
   );
 }
