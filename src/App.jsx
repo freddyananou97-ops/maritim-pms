@@ -3,12 +3,13 @@ import { useState, useEffect, useRef } from "react";
 // ============ CONFIG ============
 const ROLES = {
   admin: { label: "Admin", icon: "👑", modules: ["dashboard","rooms","guests","breakfast","spa","restaurant","roomservice","housekeeping","maintenance","taxi","billing","reports"] },
-  reception: { label: "Rezeption", icon: "🛎️", modules: ["dashboard","rooms","guests","breakfast","spa","restaurant","roomservice","taxi","billing"] },
+  reception: { label: "Rezeption", icon: "🛎️", modules: ["dashboard","rooms","guests","spa","restaurant","roomservice","taxi","billing"] },
   housekeeping: { label: "Housekeeping", icon: "🧹", modules: ["housekeeping"] },
   maintenance: { label: "Technik", icon: "🔧", modules: ["maintenance"] },
   kitchen: { label: "Küche", icon: "👨‍🍳", modules: ["roomservice"] },
   restaurant_staff: { label: "Restaurant", icon: "🍽️", modules: ["restaurant","breakfast"] },
   spa_staff: { label: "SPA", icon: "🧖", modules: ["spa"] },
+  breakfast_staff: { label: "Frühstück", icon: "☕", modules: ["breakfast"] },
 };
 
 const ROOM_TYPES = { standard_single:"Standard EZ", standard_double:"Standard DZ", superior_double:"Superior DZ", junior_suite:"Junior Suite", suite:"Suite", penthouse:"Penthouse" };
